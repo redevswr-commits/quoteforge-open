@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Quote</title>
+<style>
+  body { margin: 0; background: #f4efe6; color: #1c1915; font: 16px/1.45 Georgia, "Times New Roman", serif; }
+  main { max-width: 680px; margin: 0 auto; padding: 20px 16px 64px; }
+  article, section { background: #fffdf8; border-radius: 16px; padding: 18px; margin-top: 12px; }
+  h1 { font-size: 28px; margin: 4px 0; }
+  .kicker { letter-spacing: .16em; text-transform: uppercase; font: 11px/1.2 ui-sans-serif, system-ui, sans-serif; color: #6d6458; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  td { padding: 8px 0; border-top: 1px solid #eadfce; vertical-align: top; }
+  .num { text-align: right; white-space: nowrap; }
+  .total { font-size: 22px; font-weight: 700; }
+  .tiers, .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  button, .tier { font: 15px/1.2 ui-sans-serif, system-ui, sans-serif; border-radius: 10px; border: 1px solid #ddd4c6; background: #fff; padding: 10px 12px; }
+  button.primary { background: #243e4f; color: #fff; border-color: #243e4f; }
+  .tier.on { border-color: #243e4f; }
+  label.extra { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid #eadfce; }
+  canvas { width: 100%; height: 140px; background: #fff; border: 1px dashed #cfc3b0; border-radius: 10px; touch-action: none; }
+  .muted { color: #6d6458; font-size: 14px; }
+</style>
+<main id="app">
+  <p class="kicker">Job quote</p>
+  <h1 id="shop"></h1>
+  <p id="meta" class="muted"></p>
+  <article>
+    <p class="kicker">Prepared for</p>
+    <p id="who"></p>
+    <div id="tiers" class="tiers"></div>
+    <table id="lines"></table>
+    <div id="extras"></div>
+    <p class="total">Total <span id="total"></span></p>
+    <p id="deposit" class="muted"></p>
+    <p><a id="pay" hidden href="" style="display:none;background:#243e4f;color:#fff;text-decoration:none;border-radius:10px;padding:10px 12px">Pay deposit</a></p>
+    <div id="copy"></div>
+  </article>
+  <section>
+    <p class="kicker">What you do</p>
+    <p>Pick a price if there is more than one. Check anything extra you want. Sign with a finger.</p>
+    <p id="sign-name"></p>
+    <textarea id="note" rows="2" maxlength="500" placeholder="A question for the shop" style="width:100%;margin:8px 0;border:1px solid #eadfce;border-radius:10px;padding:8px;font:inherit"></textarea>
+    <label class="muted" for="when">Day that works</label>
+    <input id="when" type="date" style="width:100%;margin:8px 0;border:1px solid #eadfce;border-radius:10px;padding:8px;font:inherit">
+    <canvas id="pad" width="640" height="280"></canvas>
+    <div class="actions">
+      <button type="button" id="clear">Clear</button>
+      <button type="button" class="primary" id="accept">I accept and sign</button>
+      <button type="button" id="no-price">Too expensive</button>
+      <button type="button" id="no-other">Someone else</button>
+      <button type="button" id="no-later">Not now</button>
+    </div>
+    <p id="done" class="muted"></p>
+  </section>
+</main>
+<script>
+function decode(payload) {
+  try {
+    const b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+    const bin = atob(b64 + pad);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const wire = JSON.parse(new TextDecoder().decode(bytes));
+    if (wire.v !== 1 || !wire.n || !Array.isArray(wire.i)) return null;
+    const tier = { g: "good", b: "better", s: "best" };
+    return {
+      shop: (wire.b && wire.b.n) || "Quote",
+      phone: (wire.b && wire.b.p) || "",
+      email: (wire.b && wire.b.e) || "",
+      address: (wire.b && wire.b.a) || "",
+      license: (wire.b && wire.b.lic) || "",
+      warranty: (wire.b && wire.b.w) || "",
+      number: wire.n,
+      client: (wire.c && wire.c.n) || "",
+      clientAddress: (wire.c && wire.c.a) || "",
+      jobSite: wire.s || "",
+      kit: wire.k || "",
+      notes: wire.notes || "",
+      excluded: wire.ex || "",
+      terms: wire.terms || "",
+      taxRate: Number(wire.tax) || 0,
+      depositPct: Number(wire.dep) || 0,
+      discount: Math.max(0, Number(wire.disc) || 0),
+      chosenTier: tier[wire.pick] || "",
+      pay: (wire.b && wire.b.pay) || "",
+      items: wire.i.map((item) => ({
+        name: item.n || "",
+        note: item.note || "",
+        qty: Number(item.q) || 0,
+        unit: item.u || "",
+        rate: Number(item.r) || 0,
+        taxable: item.t === 1,
+        optional: item.o === 1,
+        tier: tier[item.tr] || "",
+      })),
+    };
+  } catch (err) {
+    return null;
+  }
+}
+function esc(value) {
+  return String(value).replace(/[&<>"]/g, (ch) => {
+    if (ch === "&") return "&" + "amp;";
+    if (ch === "<") return "&" + "lt;";
+    if (ch === ">") return "&" + "gt;";
+    return "&" + "quot;";
+  });
+}
+const q = decode((location.hash || "").replace(/^#/, ""));
+if (!q) {
+  document.getElementById("app").innerHTML = "<h1>This quote link is incomplete.</h1><p class='muted'>Ask the shop to send it again.</p>";
+} else {
+  const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+  const tiers = ["good", "better", "best"].filter((t) => q.items.some((i) => i.tier === t));
+  let chosen = q.chosenTier || (tiers.includes("better") ? "better" : tiers[0] || "");
+  const picked = new Set();
+  document.title = q.shop + " " + q.number;
+  document.getElementById("shop").textContent = q.shop;
+  document.getElementById("meta").textContent = [q.number, q.kit, q.phone].filter(Boolean).join(" · ");
+  document.getElementById("who").textContent = [q.client || "Customer", q.jobSite || q.clientAddress].filter(Boolean).join("\n");
+  function lineSum(item) { return Math.round(item.qty * item.rate * 100) / 100; }
+  function visible(item) {
+    if (item.optional && !picked.has(item.name)) return false;
+    if (!item.tier || tiers.length === 0) return true;
+    return item.tier === chosen;
+  }
+  function render() {
+    const lines = q.items.filter(visible);
+    document.getElementById("lines").innerHTML = lines.map((item) =>
+      "<tr><td><strong>" + esc(item.name) + "</strong>" + (item.note ? "<div class='muted'>" + esc(item.note) + "</div>" : "") + "</td><td class='num'>" + esc(item.qty + " " + item.unit) + "</td><td class='num'>" + money.format(lineSum(item)) + "</td></tr>"
+    ).join("") || "<tr><td>No items.</td></tr>";
+    const sub = lines.reduce((s, item) => s + lineSum(item), 0);
+    const discount = Math.min(sub, Number(q.discount) || 0);
+    const taxBase = lines.reduce((s, item) => s + (item.taxable ? lineSum(item) : 0), 0);
+    const total = Math.round((sub - discount + Math.max(0, taxBase - discount) * q.taxRate / 100) * 100) / 100;
+    const deposit = Math.round(total * q.depositPct) / 100;
+    document.getElementById("total").textContent = money.format(total);
+    document.getElementById("deposit").textContent = deposit > 0 ? "Deposit " + money.format(deposit) + ". Balance " + money.format(Math.round((total - deposit) * 100) / 100) + "." : "";
+    const pay = document.getElementById("pay");
+    if (q.pay && deposit > 0) { pay.href = q.pay; pay.hidden = false; pay.style.display = "inline-block"; pay.textContent = "Pay deposit " + money.format(deposit); }
+    document.querySelectorAll(".tier").forEach((el) => el.classList.toggle("on", el.dataset.tier === chosen));
+    return total;
+  }
+  const tierBox = document.getElementById("tiers");
+  tiers.forEach((tier) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tier";
+    b.dataset.tier = tier;
+    b.textContent = tier[0].toUpperCase() + tier.slice(1);
+    b.onclick = () => { chosen = tier; render(); };
+    tierBox.appendChild(b);
+  });
+  const extraBox = document.getElementById("extras");
+  q.items.filter((item) => item.optional).forEach((item) => {
+    const label = document.createElement("label");
+    label.className = "extra";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.onchange = () => { if (box.checked) picked.add(item.name); else picked.delete(item.name); render(); };
+    label.append(box, document.createTextNode(item.name + "  " + money.format(lineSum(item))));
+    extraBox.appendChild(label);
+  });
+  const bits = [];
+  if (q.notes) bits.push("<h2>Included</h2><p>" + esc(q.notes) + "</p>");
+  if (q.excluded) bits.push("<h2>Not included</h2><p>" + esc(q.excluded) + "</p>");
+  if (q.warranty) bits.push("<h2>Warranty</h2><p>" + esc(q.warranty) + "</p>");
+  if (q.terms) bits.push("<h2>Terms</h2><p>" + esc(q.terms) + "</p>");
+  document.getElementById("copy").innerHTML = bits.join("");
+  const canvas = document.getElementById("pad");
+  const ctx = canvas.getContext("2d");
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = "round";
+  let drawing = false;
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return { x: (p.clientX - r.left) * canvas.width / r.width, y: (p.clientY - r.top) * canvas.height / r.height };
+  }
+  function start(e) { drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); e.preventDefault(); }
+  function move(e) { if (!drawing) return; const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); e.preventDefault(); }
+  canvas.addEventListener("pointerdown", start);
+  canvas.addEventListener("pointermove", move);
+  canvas.addEventListener("pointerup", () => { drawing = false; });
+  canvas.addEventListener("pointerleave", () => { drawing = false; });
+  document.getElementById("clear").onclick = () => ctx.clearRect(0, 0, canvas.width, canvas.height);
+  function reply(decision, total, reason) {
+    const extras = [...picked];
+    const note = (document.getElementById("note").value || "").trim();
+    const jobDate = document.getElementById("when").value || "";
+    const why = reason === "price" ? "Too expensive" : reason === "other" ? "Someone else" : reason === "later" ? "Not now" : "";
+    const body = "Hi, I " + decision + " " + q.number + " for " + money.format(total) + (chosen ? ". Price: " + chosen : "") + (extras.length ? ". Add: " + extras.join(", ") : "") + (jobDate ? ". Day: " + jobDate : "") + (why ? ". " + why : "") + (note ? ". Note: " + note : "") + (decision === "accept" ? ". I signed it on the quote." : ".");
+    document.getElementById("done").textContent = decision === "accept" ? "Signed. Send the message that opens so the shop gets your yes." : "Send the message that opens so the shop sees why.";
+    if (q.email) location.href = "mailto:" + q.email + "?subject=" + encodeURIComponent(decision + " " + q.number) + "&body=" + encodeURIComponent(body);
+    else if (q.phone) location.href = "sms:" + q.phone.replace(/[^\d+]/g, "") + "?&body=" + encodeURIComponent(body);
+  }
+  document.getElementById("accept").onclick = () => reply("accept", render(), "");
+  document.getElementById("no-price").onclick = () => reply("decline", render(), "price");
+  document.getElementById("no-other").onclick = () => reply("decline", render(), "other");
+  document.getElementById("no-later").onclick = () => reply("decline", render(), "later");
+  render();
+}
+</script>
+</html>
